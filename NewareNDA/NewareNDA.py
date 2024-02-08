@@ -15,7 +15,7 @@ from NewareNDA.dicts import rec_columns, aux_columns, dtype_dict, \
 from .NewareNDAx import read_ndax
 
 
-def read(file, software_cycle_number=True, cycle_mode='chg'):
+def read(file, software_cycle_number=True, cycle_mode='chg', error_on_missing: bool = True) -> pd.DataFrame:
     """
     Read electrochemical data from an Neware nda or ndax binary file.
 
@@ -27,19 +27,23 @@ def read(file, software_cycle_number=True, cycle_mode='chg'):
             'chg': (Default) Sets new cycles with a Charge step following a Discharge.
             'dchg': Sets new cycles with a Discharge step following a Charge.
             'auto': Identifies the first non-rest state as the incremental state.
+        error_on_missing: In cases where an instrument is unsupported or an optional
+            feature is used (e.g., automatic scaling of data), the default is to return
+            an error, but setting this value to `False` will downgrade this to a warning.
+
     Returns:
         df (pd.DataFrame): DataFrame containing all records in the file
     """
     _, ext = os.path.splitext(file)
     if ext == '.nda':
-        return read_nda(file, software_cycle_number, cycle_mode)
+        return read_nda(file, software_cycle_number, cycle_mode, error_on_missing=error_on_missing)
     elif ext == '.ndax':
         return read_ndax(file, software_cycle_number, cycle_mode)
     else:
-        raise TypeError("File type not supported!")
+        raise TypeError(f"File type {ext=} not supported!")
 
 
-def read_nda(file, software_cycle_number, cycle_mode='chg'):
+def read_nda(file, software_cycle_number, cycle_mode='chg', error_on_missing: bool = True):
     """
     Function read electrochemical data from a Neware nda binary file.
 
@@ -51,6 +55,9 @@ def read_nda(file, software_cycle_number, cycle_mode='chg'):
             'chg': (Default) Sets new cycles with a Charge step following a Discharge.
             'dchg': Sets new cycles with a Discharge step following a Charge.
             'auto': Identifies the first non-rest state as the incremental state.
+        error_on_missing: In cases where an instrument is unsupported or an optional
+            feature is used (e.g., automatic scaling of data), the default is to return
+            an error, but setting this value to `False` will downgrade this to a warning.
     Returns:
         df (pd.DataFrame): DataFrame containing all records in the file
     """
@@ -78,9 +85,9 @@ def read_nda(file, software_cycle_number, cycle_mode='chg'):
 
         # version specific settings
         if nda_version < 130:
-            output, aux = _read_nda(mm)
+            output, aux = _read_nda(mm, error_on_missing=True)
         else:
-            output, aux = _read_nda_130(mm)
+            output, aux = _read_nda_130(mm, error_on_missing=True)
 
     # Create DataFrame and sort by Index
     df = pd.DataFrame(output, columns=rec_columns)
@@ -109,7 +116,7 @@ def read_nda(file, software_cycle_number, cycle_mode='chg'):
     return df
 
 
-def _read_nda(mm):
+def _read_nda(mm, error_on_missing: bool = True):
     """Helper function for older nda verions < 130"""
     mm_size = mm.size()
 
@@ -136,7 +143,7 @@ def _read_nda(mm):
             # Check for a data record
             if (bytes[0:2] == b'\x55\x00'
                     and bytes[82:87] == b'\x00\x00\x00\x00'):
-                output.append(_bytes_to_list(bytes))
+                output.append(_bytes_to_list(bytes, error_on_missing=True))
 
             # Check for an auxiliary record
             elif (bytes[0:1] == b'\x65'
@@ -146,7 +153,7 @@ def _read_nda(mm):
     return output, aux
 
 
-def _read_nda_130(mm):
+def _read_nda_130(mm, error_on_missing: bool = True):
     """Helper function for nda version 130"""
     mm_size = mm.size()
 
@@ -187,7 +194,7 @@ def _valid_record(bytes):
     return (Status != 0)
 
 
-def _bytes_to_list(bytes):
+def _bytes_to_list(bytes, error_on_missing: bool = True):
     """Helper function for interpreting a byte string"""
 
     # Extract fields from byte string
@@ -205,11 +212,14 @@ def _bytes_to_list(bytes):
         return []
 
     if Range not in multiplier_dict:
-        warnings.warn(
-            f"""Instrument range {Range=} not a recognized value; the data cannot be automatically scaled for this instrument, disabling scaling.
+        message = f"""Instrument range {Range=} not a recognized value; the data cannot be automatically scaled for this instrument, disabling scaling.
 For support for this instrument, please raise an issue on GitHub at https://github.com/Solid-Energy-Systems/NewareNDA/issues.
-""")
-        multiplier = 1.0
+"""
+        if error_on_missing:
+            raise RuntimeError(message)
+        else:
+            warnings.warn(message, category=RuntimeWarning)
+            multiplier = 1.0
     else:
         multiplier = multiplier_dict[Range]
 
